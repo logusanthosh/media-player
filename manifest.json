@@ -1,0 +1,14 @@
+{
+  "name": "SONIQ — Local Video Player",
+  "short_name": "SONIQ",
+  "description": "A simple, private video player for media selected from your device.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#f7f7f5",
+  "theme_color": "#f7f7f5",
+  "icons": [
+    { "src": "./icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
