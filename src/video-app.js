@@ -27,6 +27,9 @@ const state = {
   videoMuted: false,
   audioVolume: 0.8,
   audioMuted: false,
+  videoRotation: 0,
+  videoAspect: 'auto',
+  videoFit: 'fit',
   userSeeking: false,
   lastSavedPosition: 0,
   controlsTimer: 0,
@@ -262,6 +265,7 @@ function render() {
   $$('.nav-link').forEach(button => button.classList.toggle('active', button.dataset.view === state.view));
   $('#search').value = state.search;
   $('#audio-dock').hidden = !state.currentAudioId;
+  document.body.classList.toggle('has-audio-dock', Boolean(state.currentAudioId));
   renderAudioDock();
 }
 
@@ -319,6 +323,30 @@ function revealVideoControls() {
   scheduleControlHide();
 }
 
+function updateVideoLayout() {
+  const stage = $('#video-stage');
+  const bounds = stage.getBoundingClientRect();
+  if (!bounds.width || !bounds.height) return;
+  let width = bounds.width;
+  let height = bounds.height;
+  if (state.videoAspect !== 'auto') {
+    const [ratioWidth, ratioHeight] = state.videoAspect.split(':').map(Number);
+    const ratio = ratioWidth / ratioHeight;
+    if (width / height > ratio) width = height * ratio;
+    else height = width / ratio;
+  }
+  const rotated = state.videoRotation % 180 !== 0;
+  video.style.width = `${rotated ? height : width}px`;
+  video.style.height = `${rotated ? width : height}px`;
+  video.style.objectFit = state.videoFit === 'fill' ? 'cover' : 'contain';
+  video.style.transform = `translate(-50%, -50%) rotate(${state.videoRotation}deg)`;
+}
+
+function rotateVideo(degrees) {
+  state.videoRotation = (state.videoRotation + degrees + 360) % 360;
+  updateVideoLayout();
+}
+
 async function saveVideoPosition(force = false) {
   if (!state.currentVideoId || !Number.isFinite(video.currentTime)) return;
   const position = video.currentTime;
@@ -370,6 +398,7 @@ async function playVideo(id, queue = null) {
   video.volume = state.videoVolume;
   video.muted = state.videoMuted;
   $('#video-player').showModal();
+  updateVideoLayout();
   revealVideoControls();
   render();
   try {
@@ -546,13 +575,30 @@ async function requestPictureInPicture() {
   }
 }
 
-async function toggleFullscreen() {
+function releaseOrientationLock() {
+  if (screen.orientation?.unlock) screen.orientation.unlock();
+}
+
+async function toggleFullscreen(landscape = false) {
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
     else await $('#video-stage').requestFullscreen();
   } catch (error) {
     console.error('Fullscreen could not be opened:', error);
     toast('Fullscreen is not available in this browser.');
+    return;
+  }
+  if (landscape && document.fullscreenElement) {
+    if (!screen.orientation?.lock) {
+      toast('Landscape orientation is not supported here. Rotate your device to continue.');
+      return;
+    }
+    try {
+      await screen.orientation.lock('landscape');
+    } catch (error) {
+      console.info('Landscape orientation could not be locked:', error);
+      toast('Rotate your device to landscape for the best view.');
+    }
   }
 }
 
@@ -630,6 +676,21 @@ function bindEvents() {
     if (event.target.closest('#video-previous')) playPreviousVideo();
     if (event.target.closest('#video-mute')) toggleVideoMute();
     if (event.target.closest('#fullscreen-button')) toggleFullscreen();
+    if (event.target.closest('#landscape-button')) toggleFullscreen(true);
+    if (event.target.closest('#rotate-counterclockwise')) rotateVideo(-90);
+    if (event.target.closest('#rotate-clockwise')) rotateVideo(90);
+    if (event.target.closest('#rotate-reset')) {
+      state.videoRotation = 0;
+      updateVideoLayout();
+    }
+    if (event.target.closest('#video-fit')) {
+      state.videoFit = state.videoFit === 'fit' ? 'fill' : 'fit';
+      const button = $('#video-fit');
+      button.textContent = state.videoFit === 'fit' ? 'Fit' : 'Fill';
+      button.setAttribute('aria-label', `Video display ${state.videoFit === 'fit' ? 'Fit' : 'Fill'}`);
+      button.title = `Switch to ${state.videoFit === 'fit' ? 'Fill' : 'Fit'}`;
+      updateVideoLayout();
+    }
     if (event.target.closest('#pip-button')) requestPictureInPicture();
   });
 
@@ -686,7 +747,6 @@ function bindEvents() {
 
   $('#video-stage').addEventListener('pointermove', revealVideoControls);
   $('#video-stage').addEventListener('pointerdown', revealVideoControls);
-  video.addEventListener('click', toggleVideoPlay);
   video.addEventListener('play', () => {
     hideVideoMessage();
     $('#video-play').textContent = 'Ⅱ';
@@ -734,6 +794,10 @@ function bindEvents() {
     state.userSeeking = true;
     if (video.duration) video.currentTime = Number(event.target.value) / 1000 * video.duration;
     state.userSeeking = false;
+  });
+  $('#video-aspect').addEventListener('change', event => {
+    state.videoAspect = event.target.value;
+    updateVideoLayout();
   });
   $('#video-speed').addEventListener('change', event => { video.playbackRate = Number(event.target.value); });
   $('#video-volume').addEventListener('input', event => {
@@ -786,9 +850,17 @@ function bindEvents() {
   $('#video-player').addEventListener('close', () => {
     saveVideoPosition(true);
     if (!video.paused) video.pause();
+    releaseOrientationLock();
+    if (document.fullscreenElement === $('#video-stage')) {
+      document.exitFullscreen().catch(error => console.warn('Could not exit video fullscreen:', error));
+    }
     if (document.pictureInPictureElement) {
       document.exitPictureInPicture().catch(error => console.warn('Could not exit Picture in Picture:', error));
     }
+  });
+  document.addEventListener('fullscreenchange', () => {
+    if (!document.fullscreenElement) releaseOrientationLock();
+    updateVideoLayout();
   });
   $('#install-button').addEventListener('click', installApp);
   window.addEventListener('beforeinstallprompt', event => {
@@ -797,6 +869,8 @@ function bindEvents() {
     $('#install-button').hidden = false;
   });
   document.addEventListener('keydown', handleKeyboard);
+  window.addEventListener('resize', updateVideoLayout);
+  screen.orientation?.addEventListener?.('change', updateVideoLayout);
   window.addEventListener('pagehide', () => saveVideoPosition(true));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') saveVideoPosition(true);
