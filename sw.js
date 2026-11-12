@@ -1,4 +1,4 @@
-const CACHE_NAME = 'soniq-shell-v19';
+const CACHE_NAME = 'soniq-shell-v25';
 const APP_SHELL = ['./', './index.html', './video.css', './manifest.json', './icon.svg', './src/video-app.js', './src/db.js', './src/metadata.js'];
 const CACHEABLE_URLS = new Set(APP_SHELL.map(asset => new URL(asset, self.location.href).href));
 

@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-    <meta name="theme-color" content="#f7f7f5">
+    <meta name="theme-color" content="#ffffff">
     <meta name="description" content="SONIQ — your local videos, beautifully simple.">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="default">
@@ -38,65 +38,88 @@
     </div>
 
     <dialog id="video-player" class="video-dialog">
+      <header class="player-header">
+        <button id="video-close" class="player-back" aria-label="Back to library" title="Back to library">←</button>
+        <span id="video-name" class="player-filename">Video</span>
+      </header>
       <div class="video-stage" id="video-stage">
         <video id="video-element" playsinline preload="metadata"></video>
         <div class="video-message" id="video-message" hidden></div>
-        <button id="video-close" class="player-close" aria-label="Close video">×</button>
-        <div id="video-controls" class="video-controls">
-          <div class="video-title">
-            <span id="video-name">Video</span>
-            <span class="video-spacer"></span>
+        <button id="fullscreen-exit" class="fullscreen-exit" aria-label="Exit fullscreen">Exit fullscreen</button>
+      </div>
+      <section id="video-controls" class="player-controls" aria-label="Video playback controls">
+        <div class="video-timeline">
+          <span id="video-current">0:00</span>
+          <input id="video-seek" type="range" min="0" max="1000" value="0" aria-label="Video position">
+          <span id="video-remaining">-0:00</span>
+        </div>
+        <div class="player-control-row">
+          <div class="video-transport">
+            <button id="video-previous" class="player-button" aria-label="Previous video" title="Previous video">|◀</button>
+            <button id="video-play" class="player-play" aria-label="Play">▶</button>
+            <button id="video-next" class="player-button" aria-label="Next video" title="Next video">▶|</button>
           </div>
-          <div class="video-center-controls">
-            <button id="video-back" class="control-button skip-button" aria-label="Back 10 seconds">↶<small>10</small></button>
-            <button id="video-play" class="video-play" aria-label="Play">▶</button>
-            <button id="video-forward" class="control-button skip-button" aria-label="Forward 10 seconds">↷<small>10</small></button>
-          </div>
-          <div class="video-timeline">
-            <span id="video-current">0:00</span>
-            <input id="video-seek" type="range" min="0" max="1000" value="0" aria-label="Video position">
-            <span id="video-duration">0:00</span>
-          </div>
-          <div class="video-bottom-controls">
-            <button id="video-previous" class="control-button" aria-label="Previous video" title="Previous video">⏮</button>
-            <button id="video-next" class="control-button" aria-label="Next video" title="Next video">⏭</button>
-            <button id="video-mute" class="control-button" aria-label="Mute video" title="Mute video">◖</button>
-            <input id="video-volume" type="range" min="0" max="1" step="0.01" value="1" aria-label="Video volume">
+          <div class="player-utilities">
+            <button id="lock-screen-button" class="player-button utility-button" aria-label="Enable lock screen controls" aria-pressed="false">Lock Screen Controls</button>
+            <button id="fullscreen-button" class="player-button" aria-label="Enter fullscreen" title="Fullscreen">⛶</button>
+            <button id="video-options-toggle" class="player-button" aria-expanded="false" aria-controls="video-options" aria-label="Show player options">Options</button>
           </div>
         </div>
-      </div>
-      <section class="video-settings" aria-label="Video settings">
-        <div class="video-settings-group" aria-label="Display">
-          <div class="rotation-controls" aria-label="Rotate video">
-            <span class="option-label">Rotate</span>
-            <button id="rotate-counterclockwise" class="control-button" aria-label="Rotate 90 degrees counterclockwise" title="Rotate 90° counterclockwise">↶</button>
-            <button id="rotate-reset" class="control-button reset-rotation" aria-label="Reset video rotation" title="Reset rotation">0°</button>
-            <button id="rotate-clockwise" class="control-button" aria-label="Rotate 90 degrees clockwise" title="Rotate 90° clockwise">↷</button>
-          </div>
-          <label class="video-option">Aspect
-            <select id="video-aspect" aria-label="Video aspect ratio">
-              <option value="auto">Auto</option>
-              <option value="16:9">16:9</option>
-              <option value="4:3">4:3</option>
-            </select>
-          </label>
-          <button id="video-fit" class="video-fit-button" aria-label="Video display Fit">Fit</button>
-          <label class="video-option speed-option">Speed
+        <div id="video-options" class="video-options" aria-label="Player options" hidden>
+          <button id="night-mode-button" class="option-button" data-video-option="night-mode" aria-pressed="false">Night Mode</button>
+          <button id="customise-items-button" class="option-button" data-video-option="customise-items">Customise Items</button>
+          <button id="sleep-timer-button" class="option-button" data-video-option="sleep-timer">Sleep Timer</button>
+          <label class="option-button speed-option" data-video-option="playback-speed">Playback Speed
             <select id="video-speed" aria-label="Playback speed">
               <option value="0.5">0.5×</option>
+              <option value="0.75">0.75×</option>
               <option value="1" selected>1×</option>
               <option value="1.25">1.25×</option>
               <option value="1.5">1.5×</option>
               <option value="2">2×</option>
             </select>
           </label>
-        </div>
-        <div class="video-settings-group" aria-label="Player options">
-          <button id="landscape-button" class="control-button labeled-control" aria-label="Landscape fullscreen" title="Landscape fullscreen"><span aria-hidden="true">▱</span><span>Landscape</span></button>
-          <button id="pip-button" class="control-button labeled-control" aria-label="Picture in picture" title="Picture in picture"><span aria-hidden="true">▣</span><span>Picture in picture</span></button>
-          <button id="fullscreen-button" class="control-button labeled-control" aria-label="Fullscreen" title="Fullscreen"><span aria-hidden="true">⛶</span><span>Fullscreen</span></button>
+          <button id="screenshot-button" class="option-button" data-video-option="screenshot">Screenshot</button>
+          <button id="background-play-button" class="option-button" data-video-option="background-play" aria-pressed="false">Background Play</button>
+          <button id="rotation-button" class="option-button" data-video-option="screen-rotation" aria-label="Rotate video 90 degrees">Screen Rotation</button>
         </div>
       </section>
+    </dialog>
+
+    <aside id="video-background-dock" class="video-background-dock" hidden aria-label="Background video playback">
+      <span id="video-background-title">Video playing in background</span>
+      <button id="video-background-return" class="small-action">Return to video</button>
+      <button id="video-background-stop" class="small-action">Stop</button>
+    </aside>
+
+    <dialog id="customise-dialog" class="small-dialog">
+      <form id="customise-form" class="dialog-content">
+        <h2>Customise Items</h2>
+        <p class="dialog-help">Choose which options appear in the player menu. Customise Items will always stay available.</p>
+        <div id="customise-items-list" class="customise-items-list"></div>
+        <div class="dialog-actions">
+          <button type="button" id="customise-cancel" class="button button-light">Cancel</button>
+          <button class="button button-primary" type="submit">Save items</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="sleep-timer-dialog" class="small-dialog">
+      <form id="sleep-timer-form" class="dialog-content">
+        <h2>Sleep Timer</h2>
+        <label for="sleep-timer-duration">Stop playback after</label>
+        <select id="sleep-timer-duration">
+          <option value="0">Off</option>
+          <option value="15">15 minutes</option>
+          <option value="30">30 minutes</option>
+          <option value="45">45 minutes</option>
+          <option value="60">60 minutes</option>
+          <option value="90">90 minutes</option>
+        </select>
+        <div class="dialog-actions">
+          <button type="button" id="sleep-timer-cancel" class="button button-light">Cancel</button>
+          <button class="button button-primary" type="submit">Set timer</button>
+        </div>
+      </form>
     </dialog>
 
     <dialog id="playlist-dialog" class="small-dialog">

@@ -8,6 +8,15 @@ const audio = $('#audio-element');
 const MEDIA_STORE_KEY = 'items';
 const AUDIO_EXTENSIONS = /\.(mp3|wav|flac|aac|m4a|ogg|opus|oga)$/i;
 const VIDEO_EXTENSIONS = /\.(mp4|webm|mov|mkv|avi|m4v|3gp|ogv|mpg|mpeg|m2v)$/i;
+const VIDEO_OPTIONS = [
+  { id: 'night-mode', label: 'Night Mode' },
+  { id: 'customise-items', label: 'Customise Items' },
+  { id: 'sleep-timer', label: 'Sleep Timer' },
+  { id: 'playback-speed', label: 'Playback Speed' },
+  { id: 'screenshot', label: 'Screenshot' },
+  { id: 'background-play', label: 'Background Play' },
+  { id: 'screen-rotation', label: 'Screen Rotation' }
+];
 
 const state = {
   items: [],
@@ -23,22 +32,48 @@ const state = {
   currentAudioId: '',
   videoQueue: [],
   audioQueue: [],
-  videoVolume: 1,
-  videoMuted: false,
   audioVolume: 0.8,
   audioMuted: false,
   videoRotation: 0,
-  videoAspect: 'auto',
-  videoFit: 'fit',
+  videoSpeed: 1,
+  visibleVideoOptions: VIDEO_OPTIONS.map(option => option.id),
+  nightMode: false,
+  lockScreenControls: false,
+  backgroundPlay: false,
+  sleepTimer: 0,
+  sleepTimerEndsAt: 0,
+  sleepTimerMinutes: 0,
   userSeeking: false,
   lastSavedPosition: 0,
-  controlsTimer: 0,
   playlistEditId: ''
 };
 
 let deferredInstall = null;
 let confirmAction = null;
 let toastTimer = 0;
+let videoControlsHideTimer = 0;
+let videoSeekPointerId = null;
+
+function videoControlsArePinned() {
+  return video.paused || videoSeekPointerId !== null;
+}
+
+function hideVideoControls() {
+  clearTimeout(videoControlsHideTimer);
+  videoControlsHideTimer = 0;
+  if (!$('#video-player').open || videoControlsArePinned()) return;
+  $('#video-player').classList.add('controls-hidden');
+}
+
+function showVideoControls() {
+  clearTimeout(videoControlsHideTimer);
+  videoControlsHideTimer = 0;
+  if (!$('#video-player').open) return;
+  $('#video-player').classList.remove('controls-hidden');
+  if (!videoControlsArePinned()) {
+    videoControlsHideTimer = setTimeout(hideVideoControls, 3000);
+  }
+}
 
 function toast(message) {
   $('.toast')?.remove();
@@ -60,6 +95,10 @@ function formatTime(seconds) {
   if (!Number.isFinite(seconds)) return '0:00';
   const minutes = Math.floor(seconds / 60);
   return `${minutes}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+}
+
+function formatRemaining(seconds) {
+  return `-${formatTime(seconds)}`;
 }
 
 function titleFromName(name) {
@@ -267,6 +306,7 @@ function render() {
   $('#audio-dock').hidden = !state.currentAudioId;
   document.body.classList.toggle('has-audio-dock', Boolean(state.currentAudioId));
   renderAudioDock();
+  updateVideoBackgroundDock();
 }
 
 function renderAudioDock() {
@@ -292,10 +332,14 @@ function updateVideoProgress() {
   const duration = Number.isFinite(video.duration) ? video.duration : 0;
   const current = Number.isFinite(video.currentTime) ? video.currentTime : 0;
   $('#video-current').textContent = formatTime(current);
-  $('#video-duration').textContent = formatTime(duration);
+  $('#video-remaining').textContent = formatRemaining(Math.max(0, duration - current));
   if (!state.userSeeking) $('#video-seek').value = duration ? current / duration * 1000 : 0;
   $('#video-play').textContent = video.paused ? '▶' : 'Ⅱ';
   $('#video-play').setAttribute('aria-label', video.paused ? 'Play' : 'Pause');
+  $('#video-previous').disabled = state.videoQueue.indexOf(state.currentVideoId) <= 0 && current <= 3;
+  $('#video-next').disabled = state.videoQueue.indexOf(state.currentVideoId) < 0 ||
+    state.videoQueue.indexOf(state.currentVideoId) >= state.videoQueue.length - 1;
+  updateSleepTimerLabel();
 }
 
 function showVideoMessage(message) {
@@ -308,43 +352,191 @@ function hideVideoMessage() {
   $('#video-message').hidden = true;
 }
 
-function scheduleControlHide() {
-  clearTimeout(state.controlsTimer);
-  if (video.paused || !$('#video-player').open) return;
-  state.controlsTimer = setTimeout(() => {
-    $('#video-controls').classList.add('controls-hidden');
-    $('#video-stage').classList.add('cursor-hidden');
-  }, 3200);
-}
-
-function revealVideoControls() {
-  $('#video-controls').classList.remove('controls-hidden');
-  $('#video-stage').classList.remove('cursor-hidden');
-  scheduleControlHide();
-}
-
 function updateVideoLayout() {
   const stage = $('#video-stage');
   const bounds = stage.getBoundingClientRect();
   if (!bounds.width || !bounds.height) return;
-  let width = bounds.width;
-  let height = bounds.height;
-  if (state.videoAspect !== 'auto') {
-    const [ratioWidth, ratioHeight] = state.videoAspect.split(':').map(Number);
-    const ratio = ratioWidth / ratioHeight;
-    if (width / height > ratio) width = height * ratio;
-    else height = width / ratio;
-  }
   const rotated = state.videoRotation % 180 !== 0;
-  video.style.width = `${rotated ? height : width}px`;
-  video.style.height = `${rotated ? width : height}px`;
-  video.style.objectFit = state.videoFit === 'fill' ? 'cover' : 'contain';
+  video.style.width = `${rotated ? bounds.height : bounds.width}px`;
+  video.style.height = `${rotated ? bounds.width : bounds.height}px`;
+  video.style.objectFit = 'contain';
   video.style.transform = `translate(-50%, -50%) rotate(${state.videoRotation}deg)`;
 }
 
 function rotateVideo(degrees) {
   state.videoRotation = (state.videoRotation + degrees + 360) % 360;
+  const button = $('#rotation-button');
+  button.textContent = `Screen Rotation · ${state.videoRotation}°`;
+  button.setAttribute('aria-label', `Rotate video; currently ${state.videoRotation} degrees`);
   updateVideoLayout();
+}
+
+function updatePlayerSettings() {
+  $('#video-player').classList.toggle('night-mode', state.nightMode);
+  $('#night-mode-button').setAttribute('aria-pressed', String(state.nightMode));
+  $('#lock-screen-button').setAttribute('aria-pressed', String(state.lockScreenControls));
+  $('#lock-screen-button').setAttribute('aria-label', `${state.lockScreenControls ? 'Disable' : 'Enable'} lock screen controls`);
+  $('#background-play-button').setAttribute('aria-pressed', String(state.backgroundPlay));
+  $('#video-speed').value = String(state.videoSpeed);
+  $$('[data-video-option]').forEach(option => {
+    option.hidden = option.dataset.videoOption !== 'customise-items' &&
+      !state.visibleVideoOptions.includes(option.dataset.videoOption);
+  });
+  updateVideoBackgroundDock();
+}
+
+function updateVideoBackgroundDock() {
+  const dock = $('#video-background-dock');
+  const current = itemById(state.currentVideoId);
+  const visible = Boolean(current && state.backgroundPlay && !$('#video-player').open);
+  dock.hidden = !visible;
+  if (visible) $('#video-background-title').textContent = current.title;
+}
+
+function renderCustomiseItems() {
+  $('#customise-items-list').innerHTML = VIDEO_OPTIONS
+    .filter(option => option.id !== 'customise-items')
+    .map(option => `<label class="customise-item"><input type="checkbox" name="video-option" value="${option.id}" ${state.visibleVideoOptions.includes(option.id) ? 'checked' : ''}><span>${option.label}</span></label>`)
+    .join('');
+}
+
+function openCustomiseItems() {
+  renderCustomiseItems();
+  $('#customise-dialog').showModal();
+}
+
+function configureMediaSession() {
+  const mediaSession = navigator.mediaSession;
+  if (!mediaSession) return;
+  const current = itemById(state.currentVideoId);
+  const enabled = Boolean((state.lockScreenControls || state.backgroundPlay) && current);
+  if (enabled && typeof MediaMetadata === 'function') {
+    mediaSession.metadata = new MediaMetadata({ title: current.fileName || current.title, artist: 'SONIQ' });
+  } else {
+    mediaSession.metadata = null;
+  }
+  const handlers = {
+    play: () => toggleVideoPlay(),
+    pause: () => video.pause(),
+    previoustrack: () => playPreviousVideo(),
+    nexttrack: () => playNextVideo()
+  };
+  for (const [action, handler] of Object.entries(handlers)) {
+    try {
+      mediaSession.setActionHandler(action, enabled ? handler : null);
+    } catch (error) {
+      console.info(`Lock screen ${action} controls are not supported:`, error);
+    }
+  }
+  mediaSession.playbackState = video.paused ? 'paused' : 'playing';
+}
+
+function setVideoSetting(key, value) {
+  writeStore('settings', key, value)
+    .catch(error => {
+      console.error(`Could not save video ${key}:`, error);
+      toast(`Could not save this player setting. ${error?.message ?? 'Please try again.'}`);
+    });
+}
+
+function toggleNightMode() {
+  state.nightMode = !state.nightMode;
+  updatePlayerSettings();
+  setVideoSetting('video-night-mode', state.nightMode);
+}
+
+function toggleLockScreenControls() {
+  if (!navigator.mediaSession) {
+    toast('Lock screen controls are not supported by this browser.');
+    return;
+  }
+  state.lockScreenControls = !state.lockScreenControls;
+  updatePlayerSettings();
+  configureMediaSession();
+  setVideoSetting('video-lock-screen-controls', state.lockScreenControls);
+  toast(state.lockScreenControls ? 'Lock screen controls enabled where supported.' : 'Lock screen controls disabled.');
+}
+
+function toggleBackgroundPlay() {
+  state.backgroundPlay = !state.backgroundPlay;
+  updatePlayerSettings();
+  configureMediaSession();
+  setVideoSetting('video-background-play', state.backgroundPlay);
+  if (!state.backgroundPlay && !$('#video-player').open) video.pause();
+  toast(state.backgroundPlay
+    ? navigator.mediaSession
+      ? 'Playback can continue when you leave SONIQ, where your browser allows it.'
+      : 'Background playback is enabled; lock screen controls are unavailable in this browser.'
+    : 'Background playback disabled.');
+}
+
+function captureVideoScreenshot() {
+  if (!video.videoWidth || !video.videoHeight) {
+    toast('A screenshot is not available until the video has a picture.');
+    return;
+  }
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    canvas.getContext('2d').drawImage(video, 0, 0, canvas.width, canvas.height);
+    canvas.toBlob(blob => {
+      if (!blob) {
+        toast('The video frame could not be saved as an image.');
+        return;
+      }
+      const link = document.createElement('a');
+      const name = (itemById(state.currentVideoId)?.fileName || 'video')
+        .replace(/\.[^.]+$/, '')
+        .replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_');
+      link.href = URL.createObjectURL(blob);
+      link.download = `${name}-screenshot.png`;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      toast('Screenshot saved.');
+    }, 'image/png');
+  } catch (error) {
+    console.error('Could not capture video screenshot:', error);
+    toast('This video frame could not be captured.');
+  }
+}
+
+function openSleepTimer() {
+  $('#sleep-timer-duration').value = String(state.sleepTimerMinutes);
+  $('#sleep-timer-dialog').showModal();
+}
+
+function setSleepTimer(minutes) {
+  clearTimeout(state.sleepTimer);
+  state.sleepTimer = 0;
+  state.sleepTimerMinutes = minutes;
+  state.sleepTimerEndsAt = 0;
+  if (minutes) {
+    state.sleepTimerEndsAt = Date.now() + minutes * 60 * 1000;
+    state.sleepTimer = setTimeout(() => {
+      state.sleepTimer = 0;
+      state.sleepTimerMinutes = 0;
+      state.sleepTimerEndsAt = 0;
+      video.pause();
+      saveVideoPosition(true);
+      toast('Sleep timer ended. Playback paused.');
+      updateSleepTimerLabel();
+    }, minutes * 60 * 1000);
+  }
+  updateSleepTimerLabel();
+  toast(minutes ? `Sleep timer set for ${minutes} minutes.` : 'Sleep timer turned off.');
+}
+
+function updateSleepTimerLabel() {
+  const button = $('#sleep-timer-button');
+  if (!state.sleepTimerEndsAt) {
+    button.textContent = 'Sleep Timer';
+    button.title = '';
+    return;
+  }
+  const minutes = Math.max(1, Math.ceil((state.sleepTimerEndsAt - Date.now()) / 60000));
+  button.textContent = `Sleep Timer · ${minutes} min`;
+  button.title = `Playback will stop in about ${minutes} minutes`;
 }
 
 async function saveVideoPosition(force = false) {
@@ -382,7 +574,7 @@ async function playVideo(id, queue = null) {
     $('#media-input').click();
     return;
   }
-  if (state.currentVideoId && $('#video-player').open) await saveVideoPosition(true);
+  if (state.currentVideoId && state.currentVideoId !== id) await saveVideoPosition(true);
   if (queue) state.videoQueue = queue;
   else state.videoQueue = state.videos.map(entry => entry.id);
   if (state.currentAudioId) audio.pause();
@@ -394,12 +586,14 @@ async function playVideo(id, queue = null) {
   video.removeAttribute('src');
   video.load();
   video.src = item.url;
-  video.playbackRate = Number($('#video-speed').value);
-  video.volume = state.videoVolume;
-  video.muted = state.videoMuted;
+  video.playbackRate = state.videoSpeed;
   $('#video-player').showModal();
+  document.body.classList.add('video-player-open');
+  showVideoControls();
   updateVideoLayout();
-  revealVideoControls();
+  updatePlayerSettings();
+  configureMediaSession();
+  updateVideoProgress();
   render();
   try {
     await video.play();
@@ -561,56 +755,89 @@ function askConfirmation(title, message, action) {
   $('#confirm-dialog').showModal();
 }
 
-async function requestPictureInPicture() {
-  if (!document.pictureInPictureEnabled || !video.requestPictureInPicture) {
-    toast('Picture in Picture is not supported by this browser.');
-    return;
-  }
-  try {
-    if (document.pictureInPictureElement) await document.exitPictureInPicture();
-    else await video.requestPictureInPicture();
-  } catch (error) {
-    console.error('Picture in Picture could not be opened:', error);
-    toast('Picture in Picture is not available for this video.');
-  }
-}
-
-function releaseOrientationLock() {
-  if (screen.orientation?.unlock) screen.orientation.unlock();
-}
-
-async function toggleFullscreen(landscape = false) {
+async function toggleFullscreen() {
   try {
     if (document.fullscreenElement) await document.exitFullscreen();
     else await $('#video-stage').requestFullscreen();
   } catch (error) {
     console.error('Fullscreen could not be opened:', error);
     toast('Fullscreen is not available in this browser.');
-    return;
-  }
-  if (landscape && document.fullscreenElement) {
-    if (!screen.orientation?.lock) {
-      toast('Landscape orientation is not supported here. Rotate your device to continue.');
-      return;
-    }
-    try {
-      await screen.orientation.lock('landscape');
-    } catch (error) {
-      console.info('Landscape orientation could not be locked:', error);
-      toast('Rotate your device to landscape for the best view.');
-    }
   }
 }
 
 function closeVideo() {
-  clearTimeout(state.controlsTimer);
   saveVideoPosition(true);
-  video.pause();
+  if (!state.backgroundPlay) video.pause();
   $('#video-player').close();
+  updateVideoBackgroundDock();
+}
+
+function returnToVideo() {
+  if (!state.currentVideoId || $('#video-player').open) return;
+  $('#video-player').showModal();
+  showVideoControls();
+  updateVideoLayout();
+  updatePlayerSettings();
+  updateVideoProgress();
+}
+
+function stopBackgroundVideo() {
+  state.backgroundPlay = false;
+  video.pause();
+  setVideoSetting('video-background-play', false);
+  configureMediaSession();
+  if ($('#video-player').open) $('#video-player').close();
+  updatePlayerSettings();
+  render();
+}
+
+function togglePlayerOptions() {
+  const options = $('#video-options');
+  const expanded = $('#video-options-toggle').getAttribute('aria-expanded') === 'true';
+  options.hidden = expanded;
+  $('#video-options-toggle').setAttribute('aria-expanded', String(!expanded));
+  $('#video-options-toggle').setAttribute('aria-label', expanded ? 'Show player options' : 'Hide player options');
+  showVideoControls();
 }
 
 function bindEvents() {
+  const player = $('#video-player');
+  document.addEventListener('pointermove', () => {
+    if (player.open) showVideoControls();
+  });
+  document.addEventListener('pointerdown', event => {
+    if (!player.open) return;
+    if (event.target instanceof Element && event.target.closest('#video-seek')) {
+      videoSeekPointerId = event.pointerId;
+    }
+    showVideoControls();
+  });
+  document.addEventListener('pointercancel', event => {
+    if (videoSeekPointerId === event.pointerId) {
+      videoSeekPointerId = null;
+      showVideoControls();
+    }
+  });
+  document.addEventListener('focusin', () => {
+    if (player.open) showVideoControls();
+  });
+  document.addEventListener('focusout', () => {
+    if (player.open) showVideoControls();
+  });
+  if (!window.PointerEvent) {
+    document.addEventListener('touchstart', () => {
+      if (player.open) showVideoControls();
+    }, { passive: true });
+  }
+  document.addEventListener('pointerup', event => {
+    if (videoSeekPointerId === event.pointerId) {
+      videoSeekPointerId = null;
+      showVideoControls();
+    }
+  });
+
   document.addEventListener('click', event => {
+    if (player.open) showVideoControls();
     const nav = event.target.closest('[data-view]');
     if (nav) {
       state.view = nav.dataset.view;
@@ -670,28 +897,20 @@ function bindEvents() {
     }
     if (event.target.closest('#video-close')) closeVideo();
     if (event.target.closest('#video-play')) toggleVideoPlay();
-    if (event.target.closest('#video-back')) seekVideo(-10);
-    if (event.target.closest('#video-forward')) seekVideo(10);
     if (event.target.closest('#video-next')) playNextVideo();
     if (event.target.closest('#video-previous')) playPreviousVideo();
-    if (event.target.closest('#video-mute')) toggleVideoMute();
     if (event.target.closest('#fullscreen-button')) toggleFullscreen();
-    if (event.target.closest('#landscape-button')) toggleFullscreen(true);
-    if (event.target.closest('#rotate-counterclockwise')) rotateVideo(-90);
-    if (event.target.closest('#rotate-clockwise')) rotateVideo(90);
-    if (event.target.closest('#rotate-reset')) {
-      state.videoRotation = 0;
-      updateVideoLayout();
-    }
-    if (event.target.closest('#video-fit')) {
-      state.videoFit = state.videoFit === 'fit' ? 'fill' : 'fit';
-      const button = $('#video-fit');
-      button.textContent = state.videoFit === 'fit' ? 'Fit' : 'Fill';
-      button.setAttribute('aria-label', `Video display ${state.videoFit === 'fit' ? 'Fit' : 'Fill'}`);
-      button.title = `Switch to ${state.videoFit === 'fit' ? 'Fill' : 'Fit'}`;
-      updateVideoLayout();
-    }
-    if (event.target.closest('#pip-button')) requestPictureInPicture();
+    if (event.target.closest('#fullscreen-exit')) toggleFullscreen();
+    if (event.target.closest('#video-options-toggle')) togglePlayerOptions();
+    if (event.target.closest('#night-mode-button')) toggleNightMode();
+    if (event.target.closest('#customise-items-button')) openCustomiseItems();
+    if (event.target.closest('#sleep-timer-button')) openSleepTimer();
+    if (event.target.closest('#screenshot-button')) captureVideoScreenshot();
+    if (event.target.closest('#background-play-button')) toggleBackgroundPlay();
+    if (event.target.closest('#rotation-button')) rotateVideo(90);
+    if (event.target.closest('#lock-screen-button')) toggleLockScreenControls();
+    if (event.target.closest('#video-background-return')) returnToVideo();
+    if (event.target.closest('#video-background-stop')) stopBackgroundVideo();
   });
 
   $('#media-input').addEventListener('change', event => {
@@ -745,18 +964,37 @@ function bindEvents() {
     action?.();
   });
 
-  $('#video-stage').addEventListener('pointermove', revealVideoControls);
-  $('#video-stage').addEventListener('pointerdown', revealVideoControls);
+  $('#customise-form').addEventListener('submit', event => {
+    event.preventDefault();
+    state.visibleVideoOptions = $$('input[name="video-option"]:checked', $('#customise-items-list'))
+      .map(input => input.value);
+    setVideoSetting('video-visible-options', state.visibleVideoOptions);
+    updatePlayerSettings();
+    $('#customise-dialog').close();
+    toast('Player options updated.');
+  });
+  $('#customise-cancel').addEventListener('click', () => $('#customise-dialog').close());
+  $('#sleep-timer-form').addEventListener('submit', event => {
+    event.preventDefault();
+    setSleepTimer(Number($('#sleep-timer-duration').value));
+    $('#sleep-timer-dialog').close();
+  });
+  $('#sleep-timer-cancel').addEventListener('click', () => $('#sleep-timer-dialog').close());
+  $('#customise-dialog').addEventListener('close', showVideoControls);
+  $('#sleep-timer-dialog').addEventListener('close', showVideoControls);
+
   video.addEventListener('play', () => {
     hideVideoMessage();
     $('#video-play').textContent = 'Ⅱ';
     $('#video-play').setAttribute('aria-label', 'Pause');
-    scheduleControlHide();
+    configureMediaSession();
+    showVideoControls();
   });
   video.addEventListener('pause', () => {
     $('#video-play').textContent = '▶';
     $('#video-play').setAttribute('aria-label', 'Play');
-    revealVideoControls();
+    configureMediaSession();
+    showVideoControls();
   });
   video.addEventListener('loadedmetadata', async () => {
     hideVideoMessage();
@@ -795,17 +1033,10 @@ function bindEvents() {
     if (video.duration) video.currentTime = Number(event.target.value) / 1000 * video.duration;
     state.userSeeking = false;
   });
-  $('#video-aspect').addEventListener('change', event => {
-    state.videoAspect = event.target.value;
-    updateVideoLayout();
-  });
-  $('#video-speed').addEventListener('change', event => { video.playbackRate = Number(event.target.value); });
-  $('#video-volume').addEventListener('input', event => {
-    state.videoVolume = Number(event.target.value);
-    video.volume = state.videoVolume;
-    state.videoMuted = false;
-    video.muted = false;
-    $('#video-mute').textContent = state.videoVolume === 0 ? '◌' : '◖';
+  $('#video-speed').addEventListener('change', event => {
+    state.videoSpeed = Number(event.target.value);
+    video.playbackRate = state.videoSpeed;
+    setVideoSetting('video-playback-speed', state.videoSpeed);
   });
   $('#audio-seek').addEventListener('input', event => {
     state.userSeeking = true;
@@ -844,22 +1075,25 @@ function bindEvents() {
     if (audio.error) toast('This audio format or codec is not supported by your browser.');
   });
 
-  $('#video-player').addEventListener('click', event => {
+  player.addEventListener('click', event => {
     if (event.target === $('#video-player')) closeVideo();
   });
-  $('#video-player').addEventListener('close', () => {
+  player.addEventListener('close', () => {
+    clearTimeout(videoControlsHideTimer);
+    videoControlsHideTimer = 0;
+    videoSeekPointerId = null;
+    player.classList.remove('controls-hidden');
+    document.body.classList.remove('video-player-open');
     saveVideoPosition(true);
-    if (!video.paused) video.pause();
-    releaseOrientationLock();
+    if (!state.backgroundPlay && !video.paused) video.pause();
     if (document.fullscreenElement === $('#video-stage')) {
       document.exitFullscreen().catch(error => console.warn('Could not exit video fullscreen:', error));
     }
-    if (document.pictureInPictureElement) {
-      document.exitPictureInPicture().catch(error => console.warn('Could not exit Picture in Picture:', error));
-    }
+    updateVideoBackgroundDock();
   });
   document.addEventListener('fullscreenchange', () => {
-    if (!document.fullscreenElement) releaseOrientationLock();
+    const fullscreen = document.fullscreenElement === $('#video-stage');
+    $('#fullscreen-button').setAttribute('aria-label', fullscreen ? 'Exit fullscreen' : 'Enter fullscreen');
     updateVideoLayout();
   });
   $('#install-button').addEventListener('click', installApp);
@@ -870,7 +1104,6 @@ function bindEvents() {
   });
   document.addEventListener('keydown', handleKeyboard);
   window.addEventListener('resize', updateVideoLayout);
-  screen.orientation?.addEventListener?.('change', updateVideoLayout);
   window.addEventListener('pagehide', () => saveVideoPosition(true));
   document.addEventListener('visibilitychange', () => {
     if (document.visibilityState === 'hidden') saveVideoPosition(true);
@@ -894,13 +1127,6 @@ function toggleVideoPlay() {
 
 function seekVideo(delta) {
   if (Number.isFinite(video.duration)) video.currentTime = Math.max(0, Math.min(video.duration, video.currentTime + delta));
-}
-
-function toggleVideoMute() {
-  state.videoMuted = !state.videoMuted;
-  video.muted = state.videoMuted;
-  $('#video-mute').textContent = state.videoMuted ? '◌' : '◖';
-  $('#video-mute').setAttribute('aria-label', state.videoMuted ? 'Unmute video' : 'Mute video');
 }
 
 function playNextAudio() {
@@ -955,25 +1181,15 @@ function savePlaylists() {
 }
 
 function handleKeyboard(event) {
-  if (!$('#video-player').open || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName)) return;
+  if ($('#video-player').open) showVideoControls();
+  if (!$('#video-player').open || ['INPUT', 'SELECT', 'TEXTAREA'].includes(document.activeElement?.tagName) ||
+      $('#customise-dialog').open || $('#sleep-timer-dialog').open) return;
   if (event.code === 'Space') {
     event.preventDefault();
     toggleVideoPlay();
   } else if (event.key === 'ArrowLeft') seekVideo(-10);
   else if (event.key === 'ArrowRight') seekVideo(10);
-  else if (event.key === 'ArrowUp') {
-    event.preventDefault();
-    video.volume = Math.min(1, video.volume + .05);
-    state.videoVolume = video.volume;
-    $('#video-volume').value = state.videoVolume;
-  } else if (event.key === 'ArrowDown') {
-    event.preventDefault();
-    video.volume = Math.max(0, video.volume - .05);
-    state.videoVolume = video.volume;
-    $('#video-volume').value = state.videoVolume;
-  } else if (event.key.toLowerCase() === 'm') toggleVideoMute();
   else if (event.key.toLowerCase() === 'f') toggleFullscreen();
-  else if (event.key.toLowerCase() === 'p') requestPictureInPicture();
 }
 
 async function installApp() {
@@ -994,13 +1210,21 @@ async function installApp() {
 async function init() {
   await requestPersistentStorage();
   try {
-    const [library, savedMedia, playlists, recent, favorites, volume] = await Promise.all([
+    const [
+      library, savedMedia, playlists, recent, favorites, volume,
+      videoSpeed, visibleVideoOptions, nightMode, lockScreenControls, backgroundPlay
+    ] = await Promise.all([
       readStore('library', MEDIA_STORE_KEY),
       readAllMedia(),
       readStore('playlists', 'all'),
       readStore('settings', 'recent'),
       readStore('settings', 'favorites'),
-      readStore('settings', 'audio-volume')
+      readStore('settings', 'audio-volume'),
+      readStore('settings', 'video-playback-speed'),
+      readStore('settings', 'video-visible-options'),
+      readStore('settings', 'video-night-mode'),
+      readStore('settings', 'video-lock-screen-controls'),
+      readStore('settings', 'video-background-play')
     ]);
     const mediaById = new Map(savedMedia.map(entry => [
       entry.id,
@@ -1021,6 +1245,13 @@ async function init() {
     state.recent = recent ?? [];
     state.favorites = new Set(favorites ?? []);
     state.audioVolume = Number.isFinite(volume) ? volume : .8;
+    state.videoSpeed = [0.5, 0.75, 1, 1.25, 1.5, 2].includes(videoSpeed) ? videoSpeed : 1;
+    state.visibleVideoOptions = Array.isArray(visibleVideoOptions)
+      ? visibleVideoOptions.filter(id => VIDEO_OPTIONS.some(option => option.id === id))
+      : VIDEO_OPTIONS.map(option => option.id);
+    state.nightMode = Boolean(nightMode);
+    state.lockScreenControls = Boolean(lockScreenControls);
+    state.backgroundPlay = Boolean(backgroundPlay);
     audio.volume = state.audioVolume;
     $('#audio-volume').value = state.audioVolume;
   } catch (error) {
@@ -1029,6 +1260,8 @@ async function init() {
   }
   bindEvents();
   render();
+  updatePlayerSettings();
+  configureMediaSession();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
     navigator.serviceWorker.register('./sw.js')
       .catch(error => console.error('Offline app shell could not be enabled:', error));
