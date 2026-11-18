@@ -38,6 +38,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .welcome h1, .page-heading h1 { margin: 0; font-size: clamp(28px, 4vw, 37px); letter-spacing: -1.6px; font-weight: 700; }
 .welcome p, .page-heading p { margin: 9px 0 0; color: var(--muted); font-size: 13px; line-height: 1.55; }
 .open-secondary { background: transparent; border: 0; color: #6b6c70; font-size: 12px; padding: 8px 0; }
+.library-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.library-actions [hidden] { display: none; }
+.scan-status { margin: -12px 0 20px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: var(--muted); font-size: 11px; line-height: 1.5; overflow-wrap: anywhere; }
 .section { margin-top: 30px; }
 .section-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 0 0 14px; }
 .section-heading h2 { margin: 0; font-size: 18px; letter-spacing: -.4px; }
@@ -71,7 +74,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
 .small-action { height: 34px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: #fff; color: #4b4c50; font-size: 11px; }
 .small-action:hover { border-color: #c7c2ef; }
 .audio-list { border-top: 1px solid var(--line); }
-.audio-row { min-height: 61px; display: grid; grid-template-columns: 36px minmax(0, 1fr) minmax(60px, 100px) 48px 36px 36px; align-items: center; gap: 11px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+.audio-row { min-height: 61px; display: grid; grid-template-columns: 36px minmax(0, 1fr) minmax(60px, 100px) 48px 36px 36px 36px; align-items: center; gap: 11px; padding: 8px 6px; border-bottom: 1px solid var(--line); }
 .audio-row:hover { background: #ffffffab; }
 .audio-row-title { min-width: 0; }
 .audio-row-title b, .audio-row-title small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -146,6 +149,9 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .header-actions .button-light { height: 33px; min-height: 33px; padding: 0 10px; }
   .main-content { width: calc(100% - 32px); padding: 25px 0 45px; }
   .welcome, .page-heading { align-items: flex-start; margin-bottom: 22px; }
+  .welcome { flex-direction: column; }
+  .library-actions { width: 100%; }
+  .library-actions .button { min-height: 42px; padding: 0 11px; font-size: 11px; }
   .welcome h1, .page-heading h1 { font-size: 29px; }
   .welcome p, .page-heading p { font-size: 12px; }
   .open-secondary { display: none; }
@@ -162,7 +168,7 @@ button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px s
   .audio-preview { grid-template-columns: 1fr; gap: 7px; }
   .audio-chip { padding: 9px; }
   .audio-chip-icon { height: 33px; width: 33px; }
-  .audio-row { grid-template-columns: 32px minmax(0, 1fr) 45px 31px 31px; gap: 5px; padding: 7px 0; }
+  .audio-row { grid-template-columns: 30px minmax(0, 1fr) 38px 28px 28px 28px; gap: 3px; padding: 7px 0; }
   .audio-row .audio-meta { display: none; }
   .audio-row-title b { font-size: 11px; }
   .icon-button { width: 31px; height: 31px; }

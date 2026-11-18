@@ -32,6 +32,11 @@ const state = {
   currentAudioId: '',
   videoQueue: [],
   audioQueue: [],
+  scannedFolders: [],
+  scanBusy: false,
+  scanProgress: '',
+  scanSummary: '',
+  folderSelectionMode: 'manual',
   audioVolume: 0.8,
   audioMuted: false,
   videoRotation: 0,
@@ -151,9 +156,63 @@ function mediaSaveError(error, fileName) {
 }
 
 function kindOf(file) {
-  if (file.type.startsWith('video/') || VIDEO_EXTENSIONS.test(file.name)) return 'video';
-  if (file.type.startsWith('audio/') || AUDIO_EXTENSIONS.test(file.name)) return 'audio';
+  const type = typeof file?.type === 'string' ? file.type.split(';', 1)[0].trim().toLowerCase() : '';
+  const name = typeof file?.name === 'string' ? file.name : '';
+  if (type.startsWith('video/') || VIDEO_EXTENSIONS.test(name)) return 'video';
+  if (type.startsWith('audio/') || AUDIO_EXTENSIONS.test(name)) return 'audio';
   return '';
+}
+
+function createScanReport() {
+  const mediaCounts = () => ({ discovered: 0, imported: 0, skipped: 0, failed: 0 });
+  return {
+    audio: mediaCounts(),
+    video: mediaCounts(),
+    unsupported: 0,
+    scanErrors: 0,
+    errors: []
+  };
+}
+
+function recordScanFailure(report, kind, path, error) {
+  if (kind) report[kind].failed++;
+  else report.scanErrors++;
+  const detail = String(error?.message ?? 'Unknown error').replace(/[.\s]+$/, '');
+  report.errors.push(`${path}: ${detail}`);
+}
+
+function mergeScanReports(target, source) {
+  for (const kind of ['audio', 'video']) {
+    for (const count of ['discovered', 'imported', 'skipped', 'failed']) {
+      target[kind][count] += source[kind][count];
+    }
+  }
+  target.unsupported += source.unsupported;
+  target.scanErrors += source.scanErrors;
+  target.errors.push(...source.errors);
+}
+
+function formatScanReport(report, note = '') {
+  const lines = ['audio', 'video'].map(kind => {
+    const counts = report[kind];
+    const label = kind === 'audio' ? 'Audio' : 'Video';
+    return `${label}: ${counts.discovered} discovered, ${counts.imported} imported, ${counts.skipped} skipped, ${counts.failed} failed`;
+  });
+  if (report.unsupported) lines.push(`Unsupported files skipped: ${report.unsupported}`);
+  if (report.scanErrors) lines.push(`Folder access errors: ${report.scanErrors}`);
+  if (report.errors.length) lines.push(`Errors: ${report.errors.slice(0, 2).join('; ')}`);
+  if (note) lines.push(note);
+  const completion = report.scanErrors || report.audio.failed || report.video.failed
+    ? 'Scan completed with errors'
+    : 'Scan completed';
+  return `${completion}. ${lines.join('. ')}`;
+}
+
+function renderScanStatus() {
+  const message = state.scanProgress || state.scanSummary;
+  return message
+    ? `<p class="scan-status" role="status" aria-live="polite">${escapeHtml(message)}</p>`
+    : '';
 }
 
 function rememberAudioVolume() {
@@ -186,9 +245,12 @@ function emptyState(title, copy, button = true) {
 
 function videoCard(item) {
   const needsRelink = !item.url;
+  const status = item.scanMissing
+    ? 'Not found in scanned folder; saved copy retained'
+    : needsRelink ? 'Saved copy unavailable' : 'Video';
   return `<article class="video-card" tabindex="0" role="button" data-open-video="${escapeHtml(item.id)}" aria-label="Play ${escapeHtml(item.title)}">
     <div class="video-thumb"><span class="thumb-symbol" aria-hidden="true">▶</span>${item.duration ? `<span class="duration-badge">${formatTime(item.duration)}</span>` : ''}</div>
-    <div class="video-card-copy"><div><h3>${escapeHtml(item.title)}</h3><p>${needsRelink ? 'Select this file to restore playback' : 'Video'}</p></div><button class="icon-button media-delete" data-action="delete-media" data-id="${escapeHtml(item.id)}" aria-label="Delete ${escapeHtml(item.title)} from library" title="Delete from library">×</button></div>
+    <div class="video-card-copy"><div><h3>${escapeHtml(item.title)}</h3><p>${escapeHtml(status)}</p></div><button class="icon-button media-delete" data-action="delete-media" data-id="${escapeHtml(item.id)}" aria-label="Delete ${escapeHtml(item.title)} from library" title="Delete from library">×</button></div>
   </article>`;
 }
 
@@ -200,7 +262,7 @@ function videoGrid(items, title, copy) {
 function audioChip(item) {
   return `<button class="audio-chip" data-play-audio="${escapeHtml(item.id)}" aria-label="Play ${escapeHtml(item.title)}">
     <span class="audio-chip-icon" aria-hidden="true">♫</span>
-    <span class="audio-chip-copy"><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.artist || 'Unknown artist')}</small></span>
+    <span class="audio-chip-copy"><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.scanMissing ? 'Not found in scanned folder; saved copy retained' : item.artist || 'Unknown artist')}</small></span>
   </button>`;
 }
 
@@ -208,7 +270,9 @@ function renderVideos() {
   const videos = filteredItems('video');
   const recentVideos = state.recent.map(itemById).filter(item => item?.kind === 'video').slice(0, 4);
   const unlinked = state.videos.some(item => !item.url);
-  return `<div class="welcome"><div><p class="overline">SONIQ · LOCAL VIDEO PLAYER</p><h1>Your videos</h1><p>All your videos, ready when you are. Your files stay on this device.</p></div><button class="open-secondary" data-action="open-folder">Choose a folder</button></div>
+  return `<div class="welcome"><div><p class="overline">SONIQ · LOCAL VIDEO PLAYER</p><h1>Your videos</h1><p>Scan folders you choose. SONIQ only reads media you authorize, and your files stay on this device.</p></div>
+    <div class="library-actions"><button class="button button-primary" data-action="scan-folders" ${state.scanBusy ? 'disabled' : ''}>Scan Device Folders</button><button class="button button-light" data-action="rescan-folders" ${state.scanBusy ? 'disabled' : ''}>Rescan Folders</button></div></div>
+    ${renderScanStatus()}
     ${unlinked ? '<p class="library-note">Some older library entries do not have a saved file yet. Select those files once to store them on this device.</p>' : ''}
     ${videoGrid(videos, state.search ? 'No matching videos' : 'Your video library is ready', state.search ? 'Try another search.' : 'Open local video files to start watching. SONIQ never uploads your media.')}
     <section class="section"><div class="section-heading"><h2>Audio</h2><button data-view="audio">Open audio&nbsp; →</button></div>
@@ -236,7 +300,7 @@ function renderAudio() {
     : allAudio;
   const rows = songs.map(item => `<div class="audio-row" data-audio-row="${escapeHtml(item.id)}">
     <button class="icon-button audio-play-row" data-play-audio="${escapeHtml(item.id)}" aria-label="Play ${escapeHtml(item.title)}">${item.id === state.currentAudioId && !audio.paused ? 'Ⅱ' : '▶'}</button>
-    <span class="audio-row-title"><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.artist || 'Unknown artist')}</small></span>
+    <span class="audio-row-title"><b>${escapeHtml(item.title)}</b><small>${escapeHtml(item.scanMissing ? 'Not found in scanned folder; saved copy retained' : item.artist || 'Unknown artist')}</small></span>
     <span class="audio-meta">${escapeHtml(item.album || '')}</span><span class="audio-duration">${formatTime(item.duration)}</span>
     <button class="icon-button" data-action="favorite" data-id="${escapeHtml(item.id)}" aria-label="Favorite ${escapeHtml(item.title)}">${state.favorites.has(item.id) ? '♥' : '♡'}</button>
     ${selectedPlaylist
@@ -246,6 +310,7 @@ function renderAudio() {
   </div>`).join('');
   return `<div class="page-heading"><div><p class="overline">SECONDARY PLAYER</p><h1>Audio</h1><p>Local tracks and your playlists.</p></div><div class="audio-page-controls">${addButton()}</div></div>
     ${playlistTools()}
+    ${renderScanStatus()}
     ${state.audios.some(item => !item.url) ? '<p class="library-note">Some older audio entries do not have a saved file yet. Select those files once to store them on this device.</p>' : ''}
     ${songs.length ? `<div class="audio-list">${rows}</div>` : emptyState(state.search ? 'No matching audio' : selectedPlaylist ? 'This playlist is empty' : 'No audio files yet', state.search ? 'Try another search.' : 'Open audio files from your device. They stay local.', !state.search)}`;
 }
@@ -740,6 +805,472 @@ async function importFiles(fileList) {
   else if (duplicates) toast('Those files are already saved in your library.');
 }
 
+function scannedMediaId(folderId, relativePath) {
+  return `scan:${folderId}:${encodeURIComponent(relativePath.replace(/\\/g, '/'))}`;
+}
+
+async function saveScannedFile(file, folder, relativePath) {
+  const kind = kindOf(file);
+  if (!kind) return false;
+  const id = scannedMediaId(folder.id, relativePath);
+  const existing = itemById(id);
+  const metadata = {
+    ...(existing ?? {}),
+    id,
+    kind,
+    fileName: file.name,
+    type: file.type || 'application/octet-stream',
+    size: file.size,
+    lastModified: file.lastModified,
+    relativePath,
+    sourceFolderId: folder.id,
+    folderName: folder.name,
+    scanMissing: false,
+    title: existing?.title || titleFromName(file.name),
+    artist: existing?.artist || 'Unknown artist',
+    album: existing?.album || 'Unknown album',
+    duration: existing?.duration ?? 0,
+    added: existing?.added ?? Date.now()
+  };
+  const unchanged = existing?.url && existing.size === file.size &&
+    existing.lastModified === file.lastModified && !existing.scanMissing;
+  if (!unchanged) {
+    await ensureStorageAvailable(existing?.size === file.size ? 0 : file.size);
+    await saveMedia(id, file, metadata, MEDIA_STORE_KEY);
+  }
+
+  let item = existing;
+  if (!unchanged) {
+    item = { ...metadata, url: URL.createObjectURL(file), file };
+    if (existing) {
+      const index = state.items.indexOf(existing);
+      if (index >= 0) state.items[index] = item;
+      if (kind === 'video') {
+        const videoIndex = state.videos.indexOf(existing);
+        if (videoIndex >= 0) state.videos[videoIndex] = item;
+        else state.videos.unshift(item);
+      } else {
+        const audioIndex = state.audios.indexOf(existing);
+        if (audioIndex >= 0) state.audios[audioIndex] = item;
+        else state.audios.unshift(item);
+      }
+      if (existing.url && existing.id !== state.currentVideoId && existing.id !== state.currentAudioId) {
+        URL.revokeObjectURL(existing.url);
+      }
+    } else {
+      state.items.unshift(item);
+      if (kind === 'video') state.videos.unshift(item);
+      else state.audios.unshift(item);
+    }
+  } else if (existing) {
+    Object.assign(existing, metadata);
+  }
+
+  if (kind === 'audio' && !unchanged) {
+    try {
+      const embedded = await readEmbeddedMetadata(file);
+      item.title = embedded.title || item.title;
+      item.artist = embedded.artist || item.artist;
+      item.album = embedded.album || item.album;
+      item.artwork = embedded.artwork ?? item.artwork ?? null;
+      item.artworkUrl = embedded.artworkUrl || (item.artwork ? URL.createObjectURL(item.artwork) : '');
+      await persistLibrary();
+    } catch (error) {
+      console.warn(`Could not read audio tags from ${file.name}:`, error);
+    }
+  } else if (existing?.scanMissing) {
+    await persistLibrary();
+  }
+  return !unchanged;
+}
+
+async function walkMediaFolder(
+  directory,
+  prefix = '',
+  files = [],
+  failures = [],
+  stats = { enumerated: 0, unsupported: 0 },
+  progress = null
+) {
+  try {
+    for await (const entry of directory.values()) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.kind === 'directory') {
+        await walkMediaFolder(entry, relativePath, files, failures, stats, progress);
+      } else if (entry.kind === 'file') {
+        stats.enumerated++;
+        try {
+          const file = await entry.getFile();
+          const kind = kindOf(file);
+          console.debug(`[SONIQ scanner] Discovered "${relativePath}" (${kind || 'unsupported'}; ${file.type || 'unknown MIME'}).`);
+          if (kind) {
+            files.push({ file, relativePath });
+            if (progress) progress[kind]++;
+            console.debug(`[SONIQ scanner] Supported ${kind} file: "${relativePath}" (${file.type || 'unknown MIME'})`);
+          } else {
+            stats.unsupported++;
+          }
+        } catch (error) {
+          failures.push({ path: relativePath, error });
+          console.error(`[SONIQ scanner] Failed to read "${relativePath}":`, error);
+        }
+        if (progress && (stats.enumerated === 1 || stats.enumerated % 25 === 0 ||
+            Date.now() - progress.updatedAt > 500)) {
+          progress.updatedAt = Date.now();
+          state.scanProgress = `Scanning "${progress.folderName}"… ${stats.enumerated} files checked; ${progress.audio} audio and ${progress.video} video found.`;
+          render();
+        }
+      }
+    }
+  } catch (error) {
+    failures.push({ path: prefix || directory.name || 'selected folder', error });
+    console.error(`[SONIQ scanner] Failed to enumerate "${prefix || directory.name || 'selected folder'}":`, error);
+  }
+  return { files, failures, unsupported: stats.unsupported, enumerated: stats.enumerated };
+}
+
+async function rememberScannedFolders() {
+  try {
+    await writeStore('settings', 'scan-folders', state.scannedFolders);
+  } catch (error) {
+    console.error('Could not remember scanned folders:', error);
+    toast('Folder access could not be remembered. You can scan the folder again next time.');
+  }
+}
+
+async function scanFolder(folder, { requestPermission = true } = {}) {
+  if (!folder.handle || folder.handle.kind !== 'directory' || typeof folder.handle.values !== 'function') {
+    throw new Error(`"${folder.name || 'Selected folder'}" is not a readable directory handle.`);
+  }
+  console.info(`[SONIQ scanner] Checking read permission for "${folder.name}".`);
+  if (typeof folder.handle.queryPermission !== 'function') {
+    throw new Error(`This browser cannot verify read permission for "${folder.name}".`);
+  }
+  let permission;
+  if (requestPermission && typeof folder.handle.requestPermission === 'function') {
+    permission = await folder.handle.requestPermission({ mode: 'read' });
+  } else {
+    permission = await folder.handle.queryPermission({ mode: 'read' });
+  }
+  console.info(`[SONIQ scanner] Read permission for "${folder.name}": ${permission}.`);
+  if (permission !== 'granted') return { needsPermission: true, report: createScanReport() };
+
+  const progress = { folderName: folder.name, audio: 0, video: 0, updatedAt: 0 };
+  state.scanProgress = `Scanning "${folder.name}"…`;
+  render();
+  const { files, failures, unsupported, enumerated } = await walkMediaFolder(folder.handle, '', [], [], undefined, progress);
+  const report = createScanReport();
+  report.unsupported = unsupported;
+  console.info(`[SONIQ scanner] Enumerated ${enumerated} files in "${folder.name}"; ${files.length} supported media files found.`);
+  state.scanProgress = `Found ${progress.audio} audio and ${progress.video} video files in "${folder.name}". Importing…`;
+  render();
+  for (const failure of failures) {
+    recordScanFailure(report, kindOf({ name: failure.path }), failure.path, failure.error);
+  }
+  const seen = new Set();
+  for (const [index, entry] of files.entries()) {
+    const id = scannedMediaId(folder.id, entry.relativePath);
+    const kind = kindOf(entry.file);
+    report[kind].discovered++;
+    state.scanProgress = `Saving ${index + 1} of ${files.length} supported files from "${folder.name}"…`;
+    if (index === 0 || index % 10 === 0 || index === files.length - 1) render();
+    try {
+      const imported = await saveScannedFile(entry.file, folder, entry.relativePath);
+      if (imported) {
+        report[kind].imported++;
+        console.info(`[SONIQ scanner] Imported ${kind} "${entry.relativePath}" with ID ${id}.`);
+      } else {
+        report[kind].skipped++;
+        console.info(`[SONIQ scanner] Skipped unchanged ${kind} "${entry.relativePath}" with ID ${id}.`);
+      }
+      seen.add(id);
+    } catch (error) {
+      recordScanFailure(report, kind, entry.relativePath, error);
+      console.error(`Could not save scanned file "${entry.relativePath}":`, error);
+    }
+  }
+
+  if (!report.audio.failed && !report.video.failed && !report.scanErrors) {
+    let changed = false;
+    for (const item of state.items) {
+      if (item.sourceFolderId === folder.id && !seen.has(item.id) && !item.scanMissing) {
+        item.scanMissing = true;
+        changed = true;
+      }
+    }
+    if (changed) {
+      try {
+        await persistLibrary();
+      } catch (error) {
+        recordScanFailure(report, '', folder.name, error);
+        console.error(`Could not save scan results for "${folder.name}":`, error);
+      }
+    }
+  }
+  console.info(`[SONIQ scanner] Completed "${folder.name}": ${formatScanReport(report)}.`);
+  return { report, complete: !report.audio.failed && !report.video.failed && !report.scanErrors };
+}
+
+async function scanSelectedFolder() {
+  if (state.scanBusy) return;
+  if (typeof window.showDirectoryPicker !== 'function') {
+    const folderInput = $('#folder-input');
+    if (!('webkitdirectory' in folderInput)) {
+      state.scanSummary = 'Folder scanning is not supported in this browser. Open files individually instead.';
+      state.scanProgress = '';
+      render();
+      toast(state.scanSummary);
+      return;
+    }
+    state.folderSelectionMode = 'scan';
+    state.scanSummary = '';
+    state.scanProgress = 'Choose a folder to scan its audio and video files.';
+    render();
+    try {
+      folderInput.click();
+    } catch (error) {
+      state.folderSelectionMode = 'manual';
+      state.scanProgress = '';
+      state.scanSummary = `Could not open the folder picker: ${String(error?.message ?? 'Unknown error')}`;
+      console.error('[SONIQ scanner] Could not open the fallback folder picker:', error);
+      render();
+      toast(state.scanSummary);
+    }
+    return;
+  }
+
+  state.scanBusy = true;
+  state.scanSummary = '';
+  state.scanProgress = 'Opening the folder picker…';
+  render();
+  let handle;
+  try {
+    console.info('[SONIQ scanner] Opening the native folder picker.');
+    handle = await window.showDirectoryPicker({ mode: 'read' });
+  } catch (error) {
+    if (error?.name === 'AbortError') {
+      state.scanSummary = 'Folder selection cancelled.';
+    } else {
+      state.scanSummary = `Could not open the folder picker: ${String(error?.message ?? 'Unknown error')}`;
+      console.error('[SONIQ scanner] Could not open the folder picker:', error);
+      toast(state.scanSummary);
+    }
+    state.scanBusy = false;
+    state.scanProgress = '';
+    render();
+    return;
+  }
+
+  try {
+    if (!handle || handle.kind !== 'directory' || typeof handle.values !== 'function') {
+      throw new Error('The folder picker did not return a readable directory.');
+    }
+    console.info(`[SONIQ scanner] Folder selected: "${handle.name}".`);
+    state.scanProgress = `Selected "${handle.name}". Checking folder permission…`;
+    render();
+    let permission = await handle.queryPermission({ mode: 'read' });
+    if (permission !== 'granted' && typeof handle.requestPermission === 'function') {
+      permission = await handle.requestPermission({ mode: 'read' });
+    }
+    if (permission !== 'granted') {
+      throw new Error(`Read permission was not granted for "${handle.name}".`);
+    }
+
+    let folder = null;
+    for (const saved of state.scannedFolders) {
+      if (!saved.handle || typeof saved.handle.isSameEntry !== 'function') continue;
+      try {
+        if (await saved.handle.isSameEntry(handle)) {
+          folder = saved;
+          break;
+        }
+      } catch (error) {
+        console.warn('[SONIQ scanner] Could not compare a saved folder handle:', error);
+      }
+    }
+    if (!folder) {
+      folder = { id: crypto.randomUUID(), name: handle.name, handle, mode: 'handle' };
+      state.scannedFolders.push(folder);
+    } else {
+      folder.handle = handle;
+      folder.name = handle.name;
+    }
+    await rememberScannedFolders();
+    console.info(`[SONIQ scanner] Starting recursive scan of "${folder.name}".`);
+    await rescanFolders([folder], true, false);
+  } catch (error) {
+    state.scanSummary = `Could not scan the selected folder: ${String(error?.message ?? 'Unknown error')}`;
+    console.error('[SONIQ scanner] Folder scan failed:', error);
+    toast(state.scanSummary);
+  } finally {
+    state.scanBusy = false;
+    state.scanProgress = '';
+    render();
+  }
+}
+
+async function scanFallbackFolder(fileList) {
+  const files = [...fileList];
+  const report = createScanReport();
+  const byRoot = new Map();
+  const seenByFolder = new Map();
+  state.scanProgress = `Scanning the selected folder… ${files.length} files selected.`;
+  render();
+  console.info(`[SONIQ scanner] Folder picker returned ${files.length} files.`);
+  for (const [index, file] of files.entries()) {
+    const path = file.webkitRelativePath || file.name;
+    const parts = path.split('/');
+    const rootName = parts.length > 1 ? parts.shift() : 'Selected folder';
+    const relativePath = parts.join('/') || file.name;
+    let folder = byRoot.get(rootName);
+    if (!folder) {
+      folder = state.scannedFolders.find(saved => saved.mode === 'fallback' && saved.name === rootName);
+      if (!folder) {
+        folder = { id: `fallback:${encodeURIComponent(rootName)}`, name: rootName, handle: null, mode: 'fallback' };
+        state.scannedFolders.push(folder);
+      }
+      byRoot.set(rootName, folder);
+      seenByFolder.set(folder.id, new Set());
+    }
+    const kind = kindOf(file);
+    if (kind) report[kind].discovered++;
+    state.scanProgress = `Scanning the selected folder… ${index + 1} of ${files.length} files checked; ${report.audio.discovered} audio and ${report.video.discovered} video found.`;
+    if (index === 0 || index % 10 === 0 || index === files.length - 1) render();
+    if (!kind) {
+      report.unsupported++;
+      continue;
+    }
+    console.debug(`[SONIQ scanner] Supported ${kind} file: "${path}" (${file.type || 'unknown MIME'})`);
+    state.scanProgress = `Saving ${index + 1} of ${files.length} selected files… ${report.audio.discovered} audio and ${report.video.discovered} video found.`;
+    if (index === 0 || index % 10 === 0 || index === files.length - 1) render();
+    try {
+      if (await saveScannedFile(file, folder, relativePath)) {
+        report[kind].imported++;
+        console.info(`[SONIQ scanner] Imported ${kind} "${path}".`);
+      } else {
+        report[kind].skipped++;
+        console.info(`[SONIQ scanner] Skipped unchanged ${kind} "${path}".`);
+      }
+      seenByFolder.get(folder.id).add(scannedMediaId(folder.id, relativePath));
+    } catch (error) {
+      recordScanFailure(report, kind, path, error);
+      console.error(`[SONIQ scanner] Could not save "${path}":`, error);
+    }
+  }
+  console.info(`[SONIQ scanner] Folder selection contained ${files.length} files; ${report.audio.discovered + report.video.discovered} supported media files found.`);
+  if (!report.audio.failed && !report.video.failed) {
+    let changed = false;
+    for (const item of state.items) {
+      const seen = seenByFolder.get(item.sourceFolderId);
+      if (seen && !seen.has(item.id) && !item.scanMissing) {
+        item.scanMissing = true;
+        changed = true;
+      }
+    }
+    if (changed) {
+      try {
+        await persistLibrary();
+      } catch (error) {
+        recordScanFailure(report, '', 'Library metadata', error);
+        console.error('Could not save folder scan results:', error);
+      }
+    }
+  }
+  await rememberScannedFolders();
+  state.scanProgress = '';
+  const found = report.audio.discovered + report.video.discovered;
+  const note = found ? '' : 'No supported audio or video files were found in the selected folder.';
+  state.scanSummary = formatScanReport(report, note);
+  render();
+  toast(state.scanSummary);
+}
+
+async function rescanFolders(folders = state.scannedFolders, alreadyBusy = false, requestPermission = true) {
+  if (state.scanBusy && !alreadyBusy) return;
+  if (!folders.length) {
+    return scanSelectedFolder();
+  }
+  const handleFolders = folders.filter(folder => folder.handle);
+  const fallbackFolders = folders.filter(folder => !folder.handle);
+  if (!handleFolders.length && fallbackFolders.length) {
+    state.scanSummary = 'Select the folder again to rescan it in this browser.';
+    render();
+    state.folderSelectionMode = 'scan';
+    toast(state.scanSummary);
+    $('#folder-input').click();
+    return;
+  }
+
+  state.scanBusy = true;
+  state.scanSummary = '';
+  state.scanProgress = 'Checking folder permissions and scanning…';
+  render();
+  const report = createScanReport();
+  let permissionNeeded = false;
+  let incomplete = false;
+  try {
+    for (const folder of handleFolders) {
+      state.scanProgress = `Preparing to scan "${folder.name}"…`;
+      render();
+      try {
+        const result = await scanFolder(folder, { requestPermission });
+        mergeScanReports(report, result.report);
+        permissionNeeded = permissionNeeded || Boolean(result.needsPermission);
+        incomplete = incomplete || !result.complete && !result.needsPermission;
+      } catch (error) {
+        incomplete = true;
+        recordScanFailure(report, '', folder.name, error);
+        console.error(`Could not scan folder "${folder.name}":`, error);
+      }
+    }
+  } catch (error) {
+    incomplete = true;
+    recordScanFailure(report, '', 'Folder scan', error);
+    console.error('[SONIQ scanner] Unexpected error during scan:', error);
+  } finally {
+    state.scanBusy = false;
+    state.scanProgress = '';
+    render();
+  }
+  const found = report.audio.discovered + report.video.discovered;
+  const note = permissionNeeded
+    ? 'Folder permission is needed; no files were scanned from that folder.'
+    : incomplete
+      ? 'Some files could not be scanned; existing saved files were kept.'
+      : !found
+        ? 'No supported audio or video files were found in this folder.'
+        : '';
+  state.scanSummary = formatScanReport(report, note);
+  render();
+  console.info(`[SONIQ scanner] Final scan report: ${state.scanSummary}`);
+  toast(state.scanSummary);
+}
+
+async function restoreScannedFolders() {
+  const saved = state.scannedFolders.filter(folder => folder.handle);
+  if (!saved.length) return;
+  if (typeof window.showDirectoryPicker !== 'function') {
+    toast('Saved folder handles are unavailable in this browser. Use Scan Device Folders to select a folder again.');
+    return;
+  }
+  const available = [];
+  let permissionNeeded = false;
+  for (const folder of saved) {
+    try {
+      const permission = await folder.handle.queryPermission({ mode: 'read' });
+      if (permission === 'granted') available.push(folder);
+      else permissionNeeded = true;
+    } catch (error) {
+      permissionNeeded = true;
+      console.warn(`Could not restore access to folder "${folder.name}":`, error);
+    }
+  }
+  if (available.length) await rescanFolders(available, false, false);
+  if (permissionNeeded) {
+    toast('Folder access needs your permission. Choose Rescan Folders to grant access again.');
+  }
+}
+
 function openPlaylistDialog(id = '') {
   state.playlistEditId = id;
   $('#playlist-dialog-title').textContent = id ? 'Rename playlist' : 'New playlist';
@@ -849,7 +1380,8 @@ function bindEvents() {
     if (action) {
       const { action: name, id } = action.dataset;
       if (name === 'open-files') $('#media-input').click();
-      if (name === 'open-folder') $('#folder-input').click();
+      if (name === 'scan-folders') scanSelectedFolder();
+      if (name === 'rescan-folders') rescanFolders();
       if (name === 'delete-media') {
         const item = itemById(id);
         if (item) askConfirmation(
@@ -917,9 +1449,40 @@ function bindEvents() {
     importFiles(event.target.files);
     event.target.value = '';
   });
-  $('#folder-input').addEventListener('change', event => {
-    importFiles(event.target.files);
+  $('#folder-input').addEventListener('change', async event => {
+    const files = [...event.target.files];
     event.target.value = '';
+    if (state.folderSelectionMode !== 'scan') {
+      importFiles(files);
+      return;
+    }
+
+    state.scanBusy = true;
+    state.scanSummary = '';
+    state.scanProgress = files.length
+      ? `Scanning ${files.length} selected files…`
+      : 'Checking the selected folder…';
+    render();
+    try {
+      await scanFallbackFolder(files);
+    } catch (error) {
+      state.scanSummary = `Could not scan the selected folder: ${String(error?.message ?? 'Unknown error')}`;
+      console.error('[SONIQ scanner] Folder scan failed:', error);
+      toast(state.scanSummary);
+    } finally {
+      state.folderSelectionMode = 'manual';
+      state.scanBusy = false;
+      state.scanProgress = '';
+      render();
+    }
+  });
+  $('#folder-input').addEventListener('cancel', () => {
+    if (state.folderSelectionMode !== 'scan') return;
+    state.folderSelectionMode = 'manual';
+    state.scanBusy = false;
+    state.scanProgress = '';
+    state.scanSummary = 'Folder picker closed without returning new files.';
+    render();
   });
   $('#search').addEventListener('input', event => {
     state.search = event.target.value.trim();
@@ -1211,7 +1774,7 @@ async function init() {
   await requestPersistentStorage();
   try {
     const [
-      library, savedMedia, playlists, recent, favorites, volume,
+      library, savedMedia, playlists, recent, favorites, volume, scannedFolders,
       videoSpeed, visibleVideoOptions, nightMode, lockScreenControls, backgroundPlay
     ] = await Promise.all([
       readStore('library', MEDIA_STORE_KEY),
@@ -1220,13 +1783,14 @@ async function init() {
       readStore('settings', 'recent'),
       readStore('settings', 'favorites'),
       readStore('settings', 'audio-volume'),
+      readStore('settings', 'scan-folders'),
       readStore('settings', 'video-playback-speed'),
       readStore('settings', 'video-visible-options'),
       readStore('settings', 'video-night-mode'),
       readStore('settings', 'video-lock-screen-controls'),
       readStore('settings', 'video-background-play')
     ]);
-    const mediaById = new Map(savedMedia.map(entry => [
+    const mediaById = new Map((savedMedia ?? []).map(entry => [
       entry.id,
       entry.blob instanceof Blob ? entry.blob : entry instanceof Blob ? entry : null
     ]));
@@ -1244,6 +1808,7 @@ async function init() {
     state.playlists = playlists ?? [];
     state.recent = recent ?? [];
     state.favorites = new Set(favorites ?? []);
+    state.scannedFolders = Array.isArray(scannedFolders) ? scannedFolders : [];
     state.audioVolume = Number.isFinite(volume) ? volume : .8;
     state.videoSpeed = [0.5, 0.75, 1, 1.25, 1.5, 2].includes(videoSpeed) ? videoSpeed : 1;
     state.visibleVideoOptions = Array.isArray(visibleVideoOptions)
@@ -1263,9 +1828,22 @@ async function init() {
   updatePlayerSettings();
   configureMediaSession();
   if ('serviceWorker' in navigator && location.protocol !== 'file:') {
-    navigator.serviceWorker.register('./sw.js')
+    const hadController = Boolean(navigator.serviceWorker.controller);
+    if (hadController) {
+      navigator.serviceWorker.addEventListener('controllerchange', () => {
+        if (!navigator.serviceWorker.controller) return;
+        if (video.paused && audio.paused && !state.scanBusy) {
+          location.reload();
+        } else {
+          toast('A SONIQ update is ready. Refresh after playback or scanning finishes.');
+        }
+      }, { once: true });
+    }
+    navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' })
+      .then(registration => registration.update())
       .catch(error => console.error('Offline app shell could not be enabled:', error));
   }
+  await restoreScannedFolders();
 }
 
 init();
